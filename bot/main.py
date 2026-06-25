@@ -1,6 +1,8 @@
 import asyncio
 import logging
+import os
 import aiohttp
+from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.default import DefaultBotProperties
@@ -13,7 +15,7 @@ from bot.handlers import start, user, admin
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-PING_INTERVAL = 10 * 60
+PING_INTERVAL = 10 * 60  # 10 minutes
 
 
 async def create_tables():
@@ -22,12 +24,33 @@ async def create_tables():
     logger.info("Database tables created/verified.")
 
 
+async def start_webserver():
+    """Minimal web server for Render health checks & keep-alive."""
+    port = int(os.getenv("PORT", "8080"))
+
+    async def health(request):
+        return web.Response(text="OK")
+
+    app = web.Application()
+    app.router.add_get("/", health)
+    app.router.add_get("/healthz", health)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logger.info(f"Web server running on port {port}")
+
+
 async def keep_alive():
+    """Ping self every 10 min to prevent Render free tier sleep."""
     if not RENDER_URL:
         logger.info("RENDER_URL not set — keep-alive disabled.")
         return
 
-    ping_url = RENDER_URL.rstrip("/") + "/api/healthz"
+    # RENDER_URL may be just a hostname from fromService
+    base = RENDER_URL if RENDER_URL.startswith("http") else f"https://{RENDER_URL}"
+    ping_url = base.rstrip("/") + "/healthz"
     logger.info(f"Keep-alive started → pinging {ping_url} every 10 min.")
 
     async with aiohttp.ClientSession() as session:
@@ -42,6 +65,7 @@ async def keep_alive():
 
 async def main():
     await create_tables()
+    await start_webserver()
 
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
     dp = Dispatcher(storage=MemoryStorage())
