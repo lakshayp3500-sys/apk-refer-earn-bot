@@ -1,0 +1,19 @@
+services:
+  - type: worker
+    name: apk-refer-earn-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python run_bot.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMIN_ID
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: NOTIFY_ID
+        sync: false
+      - key: BOT_USERNAME
+        sync: false
+      - key: RENDER_URL
+        sync: false
