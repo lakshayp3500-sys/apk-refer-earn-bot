@@ -208,7 +208,7 @@ function finish(hash) {
     hash.dpr,
     hash.mem,
   ].join('::');
-  const final = fnv1a(combined);
+  const final = String(fnv1a(combined));  // FIX: convert to string, DB column is String(256)
   sendVerify(final);
 }
 

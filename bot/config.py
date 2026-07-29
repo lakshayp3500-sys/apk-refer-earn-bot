@@ -13,7 +13,7 @@ DATABASE_URL: str = os.environ["DATABASE_URL"]
 def _make_async_url(url: str) -> str:
     import re
     url = url.replace("postgresql://", "postgresql+asyncpg://").replace("postgres://", "postgresql+asyncpg://")
-    url = re.sub(r"[?&]sslmode=[^&]*", "", url)
+    # sslmode stripped by asyncpg via connect_args ssl="require" — do not strip from URL
     url = re.sub(r"\?$", "", url)
     return url
 

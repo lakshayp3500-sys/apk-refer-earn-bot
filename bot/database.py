@@ -10,7 +10,7 @@ engine = create_async_engine(
     max_overflow=20,
     pool_timeout=30,
     pool_recycle=1800,
-    connect_args={"ssl": False},
+    connect_args={"ssl": "require"},  # FIX: Render needs SSL
 )
 AsyncSessionLocal = async_sessionmaker(
     engine,
