@@ -46,6 +46,16 @@ async def _check_access(message_or_callback, session: AsyncSession, bot: Bot) ->
                     reply_markup=join_channels_kb(channels),
                 )
                 return False, None
+        # User joined channels (or none set) but not yet device-verified
+        from bot.config import RENDER_URL
+        if RENDER_URL:
+            await send(
+                "🔐 <b>Device Verification Required</b>\n\n"
+                "Please complete device verification first.\n"
+                "Send /start to get your verification link.",
+                parse_mode="HTML",
+            )
+            return False, None
     return True, user
 
 

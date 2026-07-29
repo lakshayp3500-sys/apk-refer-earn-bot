@@ -134,7 +134,7 @@ async def admin_add_channel_prompt(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@router.message(AdminStates.waiting_channel)
+@router.message(AdminStates.waiting_channel, F.text)
 async def admin_add_channel_receive(message: Message, state: FSMContext, session: AsyncSession, bot: Bot):
     if message.from_user.id != ADMIN_ID:
         return
@@ -159,6 +159,19 @@ async def admin_add_channel_receive(message: Message, state: FSMContext, session
             reply_markup=admin_back_kb(),
         )
 
+
+
+@router.message(AdminStates.waiting_channel)
+async def admin_add_channel_non_text(message: Message, state: FSMContext):
+    """Fallback: admin sent non-text while waiting for channel username."""
+    if message.from_user.id != ADMIN_ID:
+        return
+    await message.answer(
+        "⚠️ <b>Please send a text message with the channel username.</b>\n\n"
+        "Example: <code>@mychannel</code>",
+        parse_mode="HTML",
+        reply_markup=admin_back_kb(),
+    )
 
 @router.callback_query(F.data == "admin_remove_channel")
 async def admin_remove_channel(callback: CallbackQuery, session: AsyncSession):
@@ -250,7 +263,7 @@ async def admin_add_codes_prompt(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@router.message(AdminStates.waiting_codes)
+@router.message(AdminStates.waiting_codes, F.text)
 async def admin_add_codes_receive(message: Message, state: FSMContext, session: AsyncSession):
     if message.from_user.id != ADMIN_ID:
         return
@@ -267,6 +280,19 @@ async def admin_add_codes_receive(message: Message, state: FSMContext, session: 
         reply_markup=admin_back_kb(),
     )
 
+
+
+@router.message(AdminStates.waiting_codes)
+async def admin_add_codes_non_text(message: Message, state: FSMContext):
+    """Fallback: admin sent non-text while waiting for codes."""
+    if message.from_user.id != ADMIN_ID:
+        return
+    await message.answer(
+        "⚠️ <b>Please send a text message with codes (one per line).</b>\n\n"
+        "Example:\n<code>CODE1\nCODE2\nCODE3</code>",
+        parse_mode="HTML",
+        reply_markup=admin_back_kb(),
+    )
 
 @router.callback_query(F.data == "admin_list_codes")
 async def admin_list_codes(callback: CallbackQuery, session: AsyncSession):

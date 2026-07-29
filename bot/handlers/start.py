@@ -1,3 +1,5 @@
+import logging
+
 from aiogram import Router, F, Bot
 from aiogram.filters import CommandStart
 from aiogram.types import Message, CallbackQuery
@@ -14,97 +16,128 @@ from bot.utils.channel_checker import get_missing_channels
 from bot.config import ADMIN_ID, RENDER_URL
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, session: AsyncSession, bot: Bot):
-    args = message.text.split(maxsplit=1)
-    ref_id: int | None = None
-    if len(args) > 1:
-        try:
-            ref_id = int(args[1])
-            if ref_id == message.from_user.id:
+    try:
+        # Handle deep-link args (/start <ref_id>)
+        text = message.text or "/start"
+        args = text.split(maxsplit=1)
+        ref_id: int | None = None
+        if len(args) > 1:
+            try:
+                ref_id = int(args[1])
+                if ref_id == message.from_user.id:
+                    ref_id = None
+            except ValueError:
                 ref_id = None
-        except ValueError:
-            ref_id = None
 
-    user, is_new = await get_or_create_user(
-        session,
-        telegram_id=message.from_user.id,
-        username=message.from_user.username,
-        first_name=message.from_user.first_name,
-        referred_by=ref_id if ref_id else None,
-    )
-
-    if user.blocked:
-        await message.answer(
-            "🚫 <b>Access Restricted</b>\n\n"
-            "Your account has been suspended.\n"
-            "Contact support if you believe this is a mistake.",
-            parse_mode="HTML",
+        user, is_new = await get_or_create_user(
+            session,
+            telegram_id=message.from_user.id,
+            username=message.from_user.username,
+            first_name=message.from_user.first_name,
+            referred_by=ref_id if ref_id else None,
         )
-        return
 
-    # Already verified — just show main menu
-    if user.verified:
+        if user.blocked:
+            await message.answer(
+                "🚫 <b>Access Restricted</b>\n\n"
+                "Your account has been suspended.\n"
+                "Contact support if you believe this is a mistake.",
+                parse_mode="HTML",
+            )
+            return
+
+        # Already verified — just show main menu
+        if user.verified:
+            await message.answer(
+                f"👋 <b>Welcome back, {message.from_user.first_name or 'there'}!</b>\n\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "Use the menu below to navigate.",
+                parse_mode="HTML",
+                reply_markup=main_menu_kb(),
+            )
+            return
+
+        channels = await get_all_channels(session)
+
+        # No channels configured — skip to device verification
+        if not channels:
+            await _send_device_verify(message, session, ref_id)
+            return
+
+        missing = await get_missing_channels(bot, message.from_user.id, channels)
+        if not missing:
+            await _send_device_verify(message, session, ref_id)
+            return
+
         await message.answer(
-            f"👋 <b>Welcome back, {message.from_user.first_name or 'there'}!</b>\n\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "Use the menu below to navigate.",
+            f"👋 <b>Welcome, {message.from_user.first_name or 'there'}!</b>\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            "🔐 <b>Step 1 of 2 — Join Channels</b>\n\n"
+            f"Join all <b>{len(channels)}</b> channel(s) below, then tap "
+            f"<b>✅ I've Joined All Channels</b>.",
             parse_mode="HTML",
-            reply_markup=main_menu_kb(),
+            reply_markup=join_channels_kb(channels),
         )
-        return
 
-    channels = await get_all_channels(session)
-
-    # No channels configured — skip to device verification
-    if not channels:
-        await _send_device_verify(message, session, ref_id)
-        return
-
-    missing = await get_missing_channels(bot, message.from_user.id, channels)
-    if not missing:
-        await _send_device_verify(message, session, ref_id)
-        return
-
-    await message.answer(
-        f"👋 <b>Welcome, {message.from_user.first_name or 'there'}!</b>\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🔐 <b>Step 1 of 2 — Join Channels</b>\n\n"
-        f"Join all <b>{len(channels)}</b> channel(s) below, then tap "
-        f"<b>✅ I've Joined All Channels</b>.",
-        parse_mode="HTML",
-        reply_markup=join_channels_kb(channels),
-    )
+    except Exception as exc:
+        logger.exception("Unhandled error in cmd_start for user %s: %s", message.from_user.id, exc)
+        try:
+            await message.answer(
+                "⚠️ <b>Something went wrong.</b>\n\n"
+                "Please try <b>/start</b> again in a few seconds.\n"
+                "If the issue persists, contact support.",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
 
 
 @router.callback_query(F.data == "check_join")
 async def check_join(callback: CallbackQuery, session: AsyncSession, bot: Bot):
-    user = await get_user(session, callback.from_user.id)
-    if not user:
-        await callback.answer("Please send /start first.", show_alert=True)
-        return
+    try:
+        user = await get_user(session, callback.from_user.id)
+        if not user:
+            await callback.answer("Please send /start first.", show_alert=True)
+            return
 
-    channels = await get_all_channels(session)
-    if not channels:
+        # Already verified — no need to go through check again
+        if user.verified:
+            await callback.message.answer(
+                "✅ <b>You are already verified!</b>\n\nUse the menu below.",
+                parse_mode="HTML",
+                reply_markup=main_menu_kb(),
+            )
+            await callback.answer()
+            return
+
+        channels = await get_all_channels(session)
+        if not channels:
+            await _send_device_verify_cb(callback, session, user.referred_by)
+            return
+
+        missing = await get_missing_channels(bot, callback.from_user.id, channels)
+        if missing:
+            await callback.message.edit_text(
+                "⚠️ <b>Channels Not Joined Yet</b>\n\n"
+                "━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"You still need to join <b>{len(missing)}</b> channel(s).\n"
+                "Join them below and tap <b>🔄 Check Again</b>.",
+                parse_mode="HTML",
+                reply_markup=recheck_channels_kb(missing),
+            )
+            await callback.answer("❌ You haven't joined all channels yet.", show_alert=True)
+            return
+
         await _send_device_verify_cb(callback, session, user.referred_by)
-        return
 
-    missing = await get_missing_channels(bot, callback.from_user.id, channels)
-    if missing:
-        await callback.message.edit_text(
-            "⚠️ <b>Channels Not Joined Yet</b>\n\n"
-            "━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"You still need to join <b>{len(missing)}</b> channel(s).\n"
-            "Join them below and tap <b>🔄 Check Again</b>.",
-            parse_mode="HTML",
-            reply_markup=recheck_channels_kb(missing),
-        )
-        await callback.answer("❌ You haven't joined all channels yet.", show_alert=True)
-        return
-
-    await _send_device_verify_cb(callback, session, user.referred_by)
+    except Exception as exc:
+        logger.exception("Unhandled error in check_join for user %s: %s", callback.from_user.id, exc)
+        await callback.answer("⚠️ An error occurred. Please send /start again.", show_alert=True)
 
 
 # ── Device Verification Helpers ────────────────────────────────────────────────

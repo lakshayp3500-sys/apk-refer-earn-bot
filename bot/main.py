@@ -435,6 +435,22 @@ async def keep_alive():
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 
+
+# ── Global Error Handler ──────────────────────────────────────────────────────
+async def global_error_handler(event, exception: Exception) -> bool:
+    logger.exception("Unhandled handler exception: %s", exception)
+    try:
+        short = str(exception)[:300]
+        await event.bot.send_message(
+            ADMIN_ID,
+            f"u26a0ufe0f <b>Bot Error</b>\n\n<code>{short}</code>",
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+    return True
+
+
 async def main():
     await create_tables()
 
@@ -445,6 +461,7 @@ async def main():
     dp.include_router(admin.router)
     dp.include_router(start.router)
     dp.include_router(user.router)
+    dp.errors.register(global_error_handler)
 
     await start_webserver(bot)
 
