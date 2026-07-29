@@ -109,11 +109,9 @@ async def process_referral(session: AsyncSession, referrer_id: int, referred_id:
     )
     if existing.scalar_one_or_none():
         return False
-
     referrer = await get_user(session, referrer_id)
     if not referrer or referrer.telegram_id == referred_id:
         return False
-
     reward = await get_reward_per_referral(session)
     session.add(Referral(referrer_id=referrer_id, referred_id=referred_id))
     referrer.points += reward
@@ -202,18 +200,15 @@ async def redeem_code(session: AsyncSession, telegram_id: int) -> tuple[bool, st
     user = await get_user(session, telegram_id)
     if not user:
         return False, "User not found."
-
     cost = await get_redeem_cost(session)
     if user.points < cost:
         return False, f"Insufficient points. You need {cost} pts, you have {user.points}."
-
     result = await session.execute(
         select(Code).where(Code.is_used == False).order_by(Code.created_at.asc()).limit(1)
     )
     code = result.scalar_one_or_none()
     if not code:
         return False, "No codes available right now. Please try again later or contact support."
-
     user.points -= cost
     code.is_used = True
     code.used_by_telegram_id = telegram_id
@@ -258,8 +253,7 @@ async def get_stats(session: AsyncSession) -> dict:
 async def create_verification_token(
     session: AsyncSession, telegram_id: int, referrer_id: int | None = None
 ) -> str:
-    """Create a one-time verification token valid for 30 minutes."""
-    token = secrets.token_hex(24)  # 48-char hex string
+    token = secrets.token_hex(24)
     expires = datetime.now(timezone.utc) + timedelta(minutes=30)
     session.add(VerificationToken(
         token=token,
@@ -279,11 +273,16 @@ async def process_device_verification(
     user_agent: str,
 ) -> dict:
     """
-    Verify device from web callback.
-    Returns dict with keys: success, is_duplicate, telegram_id, referrer_id, referral_given, error
+    Verify device. Duplicate detection is based ONLY on canvas fingerprint
+    (NOT on IP or phone model/user-agent) to avoid false positives when two
+    people have the same phone model or share the same Wi-Fi network.
+
+    Returns: success, is_duplicate, telegram_id, referrer_id, referral_given,
+             user_name, user_username
     """
-    # Look up valid unused token
     now = datetime.now(timezone.utc)
+
+    # Validate token
     result = await session.execute(
         select(VerificationToken).where(
             VerificationToken.token == token,
@@ -298,24 +297,21 @@ async def process_device_verification(
     telegram_id = vtoken.telegram_id
     referrer_id = vtoken.referrer_id
 
-    # ── Duplicate device checks ────────────────────────────────────────────────
-    # Check same IP used by a different Telegram account
-    ip_dup = (await session.execute(
-        select(DeviceRecord).where(
-            DeviceRecord.ip_address == ip_address,
-            DeviceRecord.telegram_id != telegram_id,
-        )
-    )).scalar_one_or_none()
+    # ── Duplicate check: ONLY canvas fingerprint ───────────────────────────────
+    # We intentionally skip IP-based checks to avoid false positives:
+    #   • Same Wi-Fi  → same IP but different devices (NOT duplicate)
+    #   • Same phone model → same user-agent but different devices (NOT duplicate)
+    # Canvas fingerprint varies even on identical hardware (GPU driver differences).
+    fp_dup = None
+    if fingerprint_hash and fingerprint_hash != "unknown":
+        fp_dup = (await session.execute(
+            select(DeviceRecord).where(
+                DeviceRecord.fingerprint_hash == fingerprint_hash,
+                DeviceRecord.telegram_id != telegram_id,
+            )
+        )).scalar_one_or_none()
 
-    # Check same fingerprint used by a different Telegram account
-    fp_dup = (await session.execute(
-        select(DeviceRecord).where(
-            DeviceRecord.fingerprint_hash == fingerprint_hash,
-            DeviceRecord.telegram_id != telegram_id,
-        )
-    )).scalar_one_or_none()
-
-    is_duplicate = (ip_dup is not None) or (fp_dup is not None)
+    is_duplicate = fp_dup is not None
 
     # ── Store / update device record ───────────────────────────────────────────
     existing_rec = (await session.execute(
@@ -339,10 +335,15 @@ async def process_device_verification(
     vtoken.used = True
     await mark_user_verified(session, telegram_id)
 
-    # ── Process referral only if device is NOT a duplicate ────────────────────
+    # ── Referral: only if NOT duplicate ───────────────────────────────────────
     referral_given = False
     if not is_duplicate and referrer_id:
         referral_given = await process_referral(session, referrer_id, telegram_id)
+
+    # Fetch user info for admin notification
+    user = await get_user(session, telegram_id)
+    user_name = user.first_name or "N/A" if user else "N/A"
+    user_username = f"@{user.username}" if user and user.username else "no username"
 
     await session.commit()
 
@@ -352,4 +353,6 @@ async def process_device_verification(
         "telegram_id": telegram_id,
         "referrer_id": referrer_id,
         "referral_given": referral_given,
+        "user_name": user_name,
+        "user_username": user_username,
     }
