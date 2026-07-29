@@ -3,11 +3,12 @@ services:
     name: apk-refer-earn-bot
     runtime: python
     plan: free
-    pythonVersion: "3.11.9"
     buildCommand: pip install -r requirements.txt
     startCommand: python run_bot.py
     healthCheckPath: /healthz
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
       - key: RENDER_URL
         fromService:
           type: web
