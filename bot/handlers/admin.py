@@ -9,30 +9,25 @@ from bot.config import ADMIN_ID
 from bot.services.db_service import (
     get_stats, get_all_users, get_user, block_user, unblock_user,
     get_all_channels, add_channel, remove_channel,
-    get_all_apks, add_apk, remove_apk, set_all_apk_points,
-    get_setting, set_setting, get_reward_per_referral
+    get_all_codes, add_codes, remove_code, clear_unused_codes,
+    get_setting, set_setting, get_reward_per_referral, get_redeem_cost,
 )
 from bot.keyboards.admin_kb import (
-    admin_panel_kb, admin_channels_kb, admin_apk_kb,
-    admin_remove_channels_kb, admin_remove_apk_kb,
-    admin_back_kb, admin_broadcast_type_kb
+    admin_panel_kb, admin_channels_kb, admin_codes_kb,
+    admin_remove_channels_kb, admin_remove_code_kb,
+    admin_back_kb, admin_broadcast_type_kb, admin_confirm_clear_kb,
 )
 
 router = Router()
 
+PRODUCT_NAME = "Blinkit 100 off Chocolate"
+
 
 class AdminStates(StatesGroup):
     waiting_channel = State()
-    waiting_apk_name = State()
-    waiting_apk_password = State()
-    waiting_apk_points = State()
-    waiting_set_all_pts = State()
+    waiting_codes = State()          # Bulk codes input (one per line)
     waiting_broadcast_msg = State()
     waiting_broadcast_channel_msg = State()
-
-
-def _apk_temp_store(state_data: dict) -> dict:
-    return state_data
 
 
 # ── Admin Entry ────────────────────────────────────────────────────────────────
@@ -48,18 +43,19 @@ async def cmd_admin(message: Message, session: AsyncSession):
         f"👥 <b>Total Users:</b> {stats['total_users']}\n"
         f"✅ <b>Verified:</b> {stats['verified_users']}\n"
         f"🎯 <b>Total Referrals:</b> {stats['total_referrals']}\n"
-        f"📱 <b>APK Redemptions:</b> {stats['total_redemptions']}\n"
-        f"📦 <b>Active APKs:</b> {stats['active_apks']}",
+        f"🎟 <b>Codes Redeemed:</b> {stats['total_redemptions']}\n"
+        f"📦 <b>Codes in Stock:</b> {stats['available_codes']}",
         parse_mode="HTML",
         reply_markup=admin_panel_kb(),
     )
 
 
 @router.callback_query(F.data == "admin_back")
-async def admin_back(callback: CallbackQuery, session: AsyncSession):
+async def admin_back(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("Access denied.", show_alert=True)
         return
+    await state.clear()
     stats = await get_stats(session)
     await callback.message.edit_text(
         f"🛡 <b>Admin Panel</b>\n\n"
@@ -67,8 +63,8 @@ async def admin_back(callback: CallbackQuery, session: AsyncSession):
         f"👥 <b>Total Users:</b> {stats['total_users']}\n"
         f"✅ <b>Verified:</b> {stats['verified_users']}\n"
         f"🎯 <b>Total Referrals:</b> {stats['total_referrals']}\n"
-        f"📱 <b>APK Redemptions:</b> {stats['total_redemptions']}\n"
-        f"📦 <b>Active APKs:</b> {stats['active_apks']}",
+        f"🎟 <b>Codes Redeemed:</b> {stats['total_redemptions']}\n"
+        f"📦 <b>Codes in Stock:</b> {stats['available_codes']}",
         parse_mode="HTML",
         reply_markup=admin_panel_kb(),
     )
@@ -84,16 +80,20 @@ async def admin_stats(callback: CallbackQuery, session: AsyncSession):
         return
     stats = await get_stats(session)
     reward = await get_reward_per_referral(session)
+    cost = await get_redeem_cost(session)
     await callback.message.edit_text(
         f"📊 <b>Statistics</b>\n\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
         f"👥 <b>Total Users:</b> {stats['total_users']}\n"
         f"✅ <b>Verified Users:</b> {stats['verified_users']}\n"
         f"🎯 <b>Total Referrals:</b> {stats['total_referrals']}\n"
-        f"📱 <b>APK Redemptions:</b> {stats['total_redemptions']}\n"
-        f"📦 <b>Active APKs:</b> {stats['active_apks']}\n\n"
+        f"🎟 <b>Codes Redeemed:</b> {stats['total_redemptions']}\n\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"💎 <b>Reward/Referral:</b> {reward} pt(s)",
+        f"📦 <b>Available Codes:</b> {stats['available_codes']}\n"
+        f"🗃 <b>Total Codes:</b> {stats['total_codes']}\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"💎 <b>Reward/Referral:</b> {reward} pt(s)\n"
+        f"🛍 <b>Redeem Cost:</b> {cost} pt(s)",
         parse_mode="HTML",
         reply_markup=admin_back_kb(),
     )
@@ -108,9 +108,9 @@ async def admin_channels(callback: CallbackQuery):
         await callback.answer("Access denied.", show_alert=True)
         return
     await callback.message.edit_text(
-        "📡 <b>Channel Management</b>\n\n"
+        "📡 <b>Channel Manager</b>\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Manage force-join channels here.",
+        "Manage force-join channels:",
         parse_mode="HTML",
         reply_markup=admin_channels_kb(),
     )
@@ -126,10 +126,8 @@ async def admin_add_channel_prompt(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         "📡 <b>Add Channel</b>\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Send the channel username or ID.\n\n"
-        "<b>Examples:</b>\n"
-        "• <code>@mychannel</code>\n"
-        "• <code>-1001234567890</code>",
+        "Send the channel username (e.g. <code>@mychannel</code>).\n\n"
+        "<i>Bot must be an admin in that channel.</i>",
         parse_mode="HTML",
         reply_markup=admin_back_kb(),
     )
@@ -142,48 +140,37 @@ async def admin_add_channel_receive(message: Message, state: FSMContext, session
         return
     await state.clear()
     raw = message.text.strip()
+    username = raw if raw.startswith("@") else f"@{raw}"
     try:
-        if raw.lstrip("-").isdigit():
-            chat = await bot.get_chat(int(raw))
-            channel_id = str(chat.id)
-            username = (chat.username or raw).lstrip("@")
-        else:
-            username = raw.lstrip("@")
-            chat = await bot.get_chat(f"@{username}")
-            channel_id = str(chat.id)
-            username = chat.username or username
-        title = chat.title or username
-        await add_channel(session, channel_id, username, title)
+        chat = await bot.get_chat(username)
+        ch = await add_channel(session, str(chat.id), username, chat.title)
         await message.answer(
             f"✅ <b>Channel Added!</b>\n\n"
-            f"📢 <b>{title}</b> (@{username})\n"
-            f"🆔 ID: <code>{channel_id}</code>",
+            f"📢 <b>{chat.title}</b> (<code>{username}</code>)",
             parse_mode="HTML",
             reply_markup=admin_back_kb(),
         )
     except Exception as e:
         await message.answer(
-            f"❌ <b>Failed to add channel</b>\n\n"
-            f"Error: {e}\n\n"
-            f"Make sure the bot is an admin in the channel.",
+            f"❌ <b>Failed to add channel.</b>\n\n"
+            f"Make sure the bot is an admin and the username is correct.\n\n"
+            f"<code>{e}</code>",
             parse_mode="HTML",
             reply_markup=admin_back_kb(),
         )
 
 
 @router.callback_query(F.data == "admin_remove_channel")
-async def admin_remove_channel_prompt(callback: CallbackQuery, session: AsyncSession):
+async def admin_remove_channel(callback: CallbackQuery, session: AsyncSession):
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("Access denied.", show_alert=True)
         return
     channels = await get_all_channels(session)
     if not channels:
-        await callback.answer("⚠️ No channels added yet.", show_alert=True)
+        await callback.answer("No channels to remove.", show_alert=True)
         return
     await callback.message.edit_text(
-        "🗑 <b>Remove Channel</b>\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Select a channel to remove:",
+        "➖ <b>Remove Channel</b>\n\nSelect a channel to remove:",
         parse_mode="HTML",
         reply_markup=admin_remove_channels_kb(channels),
     )
@@ -191,21 +178,20 @@ async def admin_remove_channel_prompt(callback: CallbackQuery, session: AsyncSes
 
 
 @router.callback_query(F.data.startswith("admin_del_ch_"))
-async def admin_del_channel(callback: CallbackQuery, session: AsyncSession):
+async def admin_delete_channel(callback: CallbackQuery, session: AsyncSession):
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("Access denied.", show_alert=True)
         return
     ch_id = int(callback.data.split("_")[-1])
-    await remove_channel(session, ch_id)
-    await callback.answer("✅ Channel removed.", show_alert=True)
+    removed = await remove_channel(session, ch_id)
+    await callback.answer("✅ Channel removed." if removed else "❌ Not found.", show_alert=True)
     channels = await get_all_channels(session)
-    await callback.message.edit_text(
-        "📡 <b>Channel Management</b>\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Channel removed successfully.",
-        parse_mode="HTML",
-        reply_markup=admin_channels_kb(),
-    )
+    if channels:
+        await callback.message.edit_reply_markup(reply_markup=admin_remove_channels_kb(channels))
+    else:
+        await callback.message.edit_text(
+            "📡 No channels remaining.", parse_mode="HTML", reply_markup=admin_back_kb()
+        )
 
 
 @router.callback_query(F.data == "admin_list_channels")
@@ -215,219 +201,184 @@ async def admin_list_channels(callback: CallbackQuery, session: AsyncSession):
         return
     channels = await get_all_channels(session)
     if not channels:
-        await callback.answer("No channels added yet.", show_alert=True)
+        await callback.answer("No channels configured.", show_alert=True)
         return
-    lines = ["📋 <b>Force-Join Channels</b>\n\n━━━━━━━━━━━━━━━━━━━━\n"]
-    for ch in channels:
-        lines.append(f"• <b>{ch.channel_title or ch.channel_username}</b> | @{ch.channel_username}")
+    lines = ["📡 <b>Configured Channels</b>\n"]
+    for i, ch in enumerate(channels, 1):
+        lines.append(f"{i}. {ch.channel_title or ''} <code>{ch.channel_username}</code>")
     await callback.message.edit_text(
         "\n".join(lines), parse_mode="HTML", reply_markup=admin_channels_kb()
     )
     await callback.answer()
 
 
-# ── APK Manager ────────────────────────────────────────────────────────────────
+# ── Code Manager ───────────────────────────────────────────────────────────────
 
-@router.callback_query(F.data == "admin_apks")
-async def admin_apks(callback: CallbackQuery):
+@router.callback_query(F.data == "admin_codes")
+async def admin_codes_menu(callback: CallbackQuery, session: AsyncSession):
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("Access denied.", show_alert=True)
         return
+    stats = await get_stats(session)
     await callback.message.edit_text(
-        "📱 <b>APK Manager</b>\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Manage available APKs and their prices.",
-        parse_mode="HTML",
-        reply_markup=admin_apk_kb(),
-    )
-    await callback.answer()
-
-
-@router.callback_query(F.data == "admin_add_apk")
-async def admin_add_apk_prompt(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("Access denied.", show_alert=True)
-        return
-    await state.set_state(AdminStates.waiting_apk_name)
-    await callback.message.edit_text(
-        "📱 <b>Add New APK — Step 1/3</b>\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Send the <b>APK Name</b>:\n"
-        "<i>(e.g. Netflix Premium, Spotify Pro)</i>",
-        parse_mode="HTML",
-        reply_markup=admin_back_kb(),
-    )
-    await callback.answer()
-
-
-@router.message(AdminStates.waiting_apk_name)
-async def admin_apk_name_receive(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    await state.update_data(apk_name=message.text.strip())
-    await state.set_state(AdminStates.waiting_apk_password)
-    await message.answer(
-        "📱 <b>Add New APK — Step 2/3</b>\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"✅ <b>Name:</b> {message.text.strip()}\n\n"
-        "Now send the <b>APK Password</b>:\n"
-        "<i>(This will be auto-delivered to users on redemption)</i>",
-        parse_mode="HTML",
-        reply_markup=admin_back_kb(),
-    )
-
-
-@router.message(AdminStates.waiting_apk_password)
-async def admin_apk_password_receive(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    await state.update_data(apk_password=message.text.strip())
-    await state.set_state(AdminStates.waiting_apk_points)
-    data = await state.get_data()
-    await message.answer(
-        "📱 <b>Add New APK — Step 3/3</b>\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"✅ <b>Name:</b> {data.get('apk_name')}\n"
-        f"✅ <b>Password:</b> Set\n\n"
-        "Now send the <b>Point Cost</b> (number):\n"
-        "<i>(e.g. 5 — users need this many points to redeem)</i>",
-        parse_mode="HTML",
-        reply_markup=admin_back_kb(),
-    )
-
-
-@router.message(AdminStates.waiting_apk_points)
-async def admin_apk_points_receive(message: Message, state: FSMContext, session: AsyncSession):
-    if message.from_user.id != ADMIN_ID:
-        return
-    try:
-        pts = int(message.text.strip())
-        if pts <= 0:
-            raise ValueError
-    except ValueError:
-        await message.answer("❌ Please send a valid positive number.", parse_mode="HTML")
-        return
-    data = await state.get_data()
-    await state.clear()
-    apk = await add_apk(session, data["apk_name"], data["apk_password"], pts)
-    await message.answer(
-        f"✅ <b>APK Added Successfully!</b>\n\n"
+        f"🎟 <b>Code Manager — {PRODUCT_NAME}</b>\n\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"📦 <b>Name:</b> {apk.name}\n"
-        f"🔑 <b>Password:</b> Set ✓\n"
-        f"💎 <b>Cost:</b> {apk.point_cost} pts",
+        f"📦 <b>Available Codes:</b> {stats['available_codes']}\n"
+        f"✅ <b>Used Codes:</b> {stats['total_redemptions']}\n"
+        f"🗃 <b>Total Codes:</b> {stats['total_codes']}",
         parse_mode="HTML",
-        reply_markup=admin_back_kb(),
-    )
-
-
-@router.callback_query(F.data == "admin_remove_apk")
-async def admin_remove_apk_prompt(callback: CallbackQuery, session: AsyncSession):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("Access denied.", show_alert=True)
-        return
-    apks = await get_all_apks(session)
-    if not apks:
-        await callback.answer("⚠️ No APKs added yet.", show_alert=True)
-        return
-    await callback.message.edit_text(
-        "🗑 <b>Remove APK</b>\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Select an APK to remove:",
-        parse_mode="HTML",
-        reply_markup=admin_remove_apk_kb(apks),
+        reply_markup=admin_codes_kb(),
     )
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("admin_del_apk_"))
-async def admin_del_apk(callback: CallbackQuery, session: AsyncSession):
+@router.callback_query(F.data == "admin_add_codes")
+async def admin_add_codes_prompt(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("Access denied.", show_alert=True)
         return
-    apk_id = int(callback.data.split("_")[-1])
-    await remove_apk(session, apk_id)
-    await callback.answer("✅ APK removed.", show_alert=True)
+    await state.set_state(AdminStates.waiting_codes)
     await callback.message.edit_text(
-        "📱 <b>APK Manager</b>\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "APK removed successfully.",
-        parse_mode="HTML",
-        reply_markup=admin_apk_kb(),
-    )
-
-
-@router.callback_query(F.data == "admin_list_apks")
-async def admin_list_apks(callback: CallbackQuery, session: AsyncSession):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("Access denied.", show_alert=True)
-        return
-    apks = await get_all_apks(session)
-    if not apks:
-        await callback.answer("No APKs added yet.", show_alert=True)
-        return
-    lines = ["📋 <b>All APKs</b>\n\n━━━━━━━━━━━━━━━━━━━━\n"]
-    for apk in apks:
-        lines.append(f"• <b>{apk.name}</b> — 💎 {apk.point_cost} pts")
-    await callback.message.edit_text(
-        "\n".join(lines), parse_mode="HTML", reply_markup=admin_apk_kb()
-    )
-    await callback.answer()
-
-
-@router.callback_query(F.data == "admin_set_all_apk_pts")
-async def admin_set_all_apk_pts_prompt(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("Access denied.", show_alert=True)
-        return
-    await state.set_state(AdminStates.waiting_set_all_pts)
-    await callback.message.edit_text(
-        "🔁 <b>Set Same Points for All APKs</b>\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Send the <b>point cost</b> to apply to all APKs at once:\n"
-        "<i>(e.g. 5)</i>",
+        f"➕ <b>Add Codes</b>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"Send your <b>{PRODUCT_NAME}</b> codes — <b>one per line</b>:\n\n"
+        f"<code>CODE1\nCODE2\nCODE3</code>\n\n"
+        f"Duplicate codes will be skipped automatically.",
         parse_mode="HTML",
         reply_markup=admin_back_kb(),
     )
     await callback.answer()
 
 
-@router.message(AdminStates.waiting_set_all_pts)
-async def admin_set_all_apk_pts_receive(message: Message, state: FSMContext, session: AsyncSession):
+@router.message(AdminStates.waiting_codes)
+async def admin_add_codes_receive(message: Message, state: FSMContext, session: AsyncSession):
     if message.from_user.id != ADMIN_ID:
-        return
-    try:
-        pts = int(message.text.strip())
-        if pts <= 0:
-            raise ValueError
-    except ValueError:
-        await message.answer("❌ Please send a valid positive number.", parse_mode="HTML")
         return
     await state.clear()
-    count = await set_all_apk_points(session, pts)
+    lines = message.text.strip().splitlines()
+    added, skipped = await add_codes(session, lines)
     await message.answer(
-        f"✅ <b>Updated {count} APK(s)!</b>\n\n"
+        f"✅ <b>Codes Added!</b>\n\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"💎 All APKs now cost <b>{pts} pt(s)</b> to redeem.",
+        f"✅ <b>Added:</b> {added}\n"
+        f"⚠️ <b>Skipped (duplicates):</b> {skipped}\n"
+        f"📊 <b>Total processed:</b> {added + skipped}",
         parse_mode="HTML",
         reply_markup=admin_back_kb(),
     )
+
+
+@router.callback_query(F.data == "admin_list_codes")
+async def admin_list_codes(callback: CallbackQuery, session: AsyncSession):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Access denied.", show_alert=True)
+        return
+    stats = await get_stats(session)
+    codes = await get_all_codes(session)
+    available = [c for c in codes if not c.is_used]
+    used = [c for c in codes if c.is_used]
+
+    lines = [
+        f"📋 <b>Code Stock Overview</b>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"📦 <b>Available:</b> {len(available)}\n"
+        f"✅ <b>Used:</b> {len(used)}\n"
+        f"🗃 <b>Total:</b> {len(codes)}\n\n"
+    ]
+    if available:
+        lines.append("🔑 <b>Next codes to be given (first 5):</b>")
+        for c in available[:5]:
+            short = c.code[:25] + "…" if len(c.code) > 25 else c.code
+            lines.append(f"  • <code>{short}</code>")
+    await callback.message.edit_text(
+        "\n".join(lines), parse_mode="HTML", reply_markup=admin_codes_kb()
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_remove_code")
+async def admin_remove_code_menu(callback: CallbackQuery, session: AsyncSession):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Access denied.", show_alert=True)
+        return
+    codes = await get_all_codes(session)
+    available = [c for c in codes if not c.is_used]
+    if not available:
+        await callback.answer("No unused codes to remove.", show_alert=True)
+        return
+    await callback.message.edit_text(
+        "➖ <b>Remove Code</b>\n\nSelect an unused code to delete:",
+        parse_mode="HTML",
+        reply_markup=admin_remove_code_kb(available),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_del_code_"))
+async def admin_delete_code(callback: CallbackQuery, session: AsyncSession):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Access denied.", show_alert=True)
+        return
+    code_id = int(callback.data.split("_")[-1])
+    removed = await remove_code(session, code_id)
+    await callback.answer("✅ Code removed." if removed else "❌ Could not remove (already used?).", show_alert=True)
+    codes = await get_all_codes(session)
+    available = [c for c in codes if not c.is_used]
+    if available:
+        await callback.message.edit_reply_markup(reply_markup=admin_remove_code_kb(available))
+    else:
+        await callback.message.edit_text(
+            "📭 No unused codes remaining.", parse_mode="HTML", reply_markup=admin_back_kb()
+        )
+
+
+@router.callback_query(F.data == "admin_clear_codes")
+async def admin_clear_codes_confirm_prompt(callback: CallbackQuery, session: AsyncSession):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Access denied.", show_alert=True)
+        return
+    stats = await get_stats(session)
+    await callback.message.edit_text(
+        f"⚠️ <b>Clear All Unused Codes?</b>\n\n"
+        f"This will permanently delete <b>{stats['available_codes']}</b> unused code(s).\n\n"
+        f"Used codes will NOT be affected.",
+        parse_mode="HTML",
+        reply_markup=admin_confirm_clear_kb(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_clear_codes_confirm")
+async def admin_clear_codes_execute(callback: CallbackQuery, session: AsyncSession):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Access denied.", show_alert=True)
+        return
+    count = await clear_unused_codes(session)
+    await callback.message.edit_text(
+        f"🗑 <b>Done!</b> {count} unused code(s) cleared.",
+        parse_mode="HTML",
+        reply_markup=admin_back_kb(),
+    )
+    await callback.answer()
 
 
 # ── Point Settings ─────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "admin_points")
-async def admin_points(callback: CallbackQuery, session: AsyncSession):
+async def admin_points_menu(callback: CallbackQuery, session: AsyncSession):
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("Access denied.", show_alert=True)
         return
     reward = await get_reward_per_referral(session)
+    cost = await get_redeem_cost(session)
     await callback.message.edit_text(
         f"⚙️ <b>Point Settings</b>\n\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"💎 <b>Referral Reward:</b> {reward} pt(s)\n\n"
-        f"<b>Commands:</b>\n"
-        f"<code>/setreward NUMBER</code> — set points per referral",
+        f"💎 <b>Reward per Referral:</b> {reward} pt(s)\n"
+        f"🛍 <b>Redeem Cost (per code):</b> {cost} pt(s)\n\n"
+        f"Use commands to change:\n"
+        f"<code>/setreward N</code> — set referral reward\n"
+        f"<code>/setcost N</code> — set redeem cost",
         parse_mode="HTML",
         reply_markup=admin_back_kb(),
     )
@@ -435,133 +386,49 @@ async def admin_points(callback: CallbackQuery, session: AsyncSession):
 
 
 @router.message(Command("setreward"))
-async def cmd_setreward(message: Message, session: AsyncSession):
+async def cmd_set_reward(message: Message, session: AsyncSession):
     if message.from_user.id != ADMIN_ID:
         return
     parts = message.text.split()
-    if len(parts) < 2:
-        await message.answer("Usage: <code>/setreward NUMBER</code>", parse_mode="HTML")
+    if len(parts) != 2 or not parts[1].isdigit() or int(parts[1]) < 1:
+        await message.answer("Usage: <code>/setreward N</code> (N ≥ 1)", parse_mode="HTML")
         return
-    try:
-        val = int(parts[1])
-        if val <= 0:
-            raise ValueError
-    except ValueError:
-        await message.answer("❌ Please provide a positive number.", parse_mode="HTML")
+    await set_setting(session, "reward_per_referral", parts[1])
+    await message.answer(f"✅ Referral reward set to <b>{parts[1]}</b> pt(s).", parse_mode="HTML")
+
+
+@router.message(Command("setcost"))
+async def cmd_set_cost(message: Message, session: AsyncSession):
+    if message.from_user.id != ADMIN_ID:
         return
-    await set_setting(session, "reward_per_referral", str(val))
-    await message.answer(
-        f"✅ <b>Referral reward set to {val} pt(s)</b>",
-        parse_mode="HTML",
-    )
+    parts = message.text.split()
+    if len(parts) != 2 or not parts[1].isdigit() or int(parts[1]) < 1:
+        await message.answer("Usage: <code>/setcost N</code> (N ≥ 1)", parse_mode="HTML")
+        return
+    await set_setting(session, "redeem_cost", parts[1])
+    await message.answer(f"✅ Redeem cost set to <b>{parts[1]}</b> pt(s).", parse_mode="HTML")
 
 
 # ── Users ──────────────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "admin_users")
-async def admin_users(callback: CallbackQuery):
+async def admin_users_menu(callback: CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("Access denied.", show_alert=True)
         return
     await callback.message.edit_text(
         "👥 <b>User Management</b>\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "<b>Available Commands:</b>\n\n"
+        "Available commands:\n\n"
+        "<code>/userinfo USER_ID</code> — view user details\n"
         "<code>/block USER_ID</code> — block a user\n"
         "<code>/unblock USER_ID</code> — unblock a user\n"
-        "<code>/addpts USER_ID AMOUNT</code> — add points\n"
-        "<code>/rmpts USER_ID AMOUNT</code> — remove points\n"
-        "<code>/userinfo USER_ID</code> — view user details",
+        "<code>/addpts USER_ID N</code> — add points\n"
+        "<code>/rmpts USER_ID N</code> — remove points",
         parse_mode="HTML",
         reply_markup=admin_back_kb(),
     )
     await callback.answer()
-
-
-@router.message(Command("block"))
-async def cmd_block(message: Message, session: AsyncSession):
-    if message.from_user.id != ADMIN_ID:
-        return
-    parts = message.text.split()
-    if len(parts) < 2:
-        await message.answer("Usage: <code>/block USER_ID</code>", parse_mode="HTML")
-        return
-    try:
-        uid = int(parts[1])
-    except ValueError:
-        await message.answer("❌ Invalid user ID.", parse_mode="HTML")
-        return
-    await block_user(session, uid)
-    await message.answer(f"🚫 User <code>{uid}</code> has been blocked.", parse_mode="HTML")
-
-
-@router.message(Command("unblock"))
-async def cmd_unblock(message: Message, session: AsyncSession):
-    if message.from_user.id != ADMIN_ID:
-        return
-    parts = message.text.split()
-    if len(parts) < 2:
-        await message.answer("Usage: <code>/unblock USER_ID</code>", parse_mode="HTML")
-        return
-    try:
-        uid = int(parts[1])
-    except ValueError:
-        await message.answer("❌ Invalid user ID.", parse_mode="HTML")
-        return
-    await unblock_user(session, uid)
-    await message.answer(f"✅ User <code>{uid}</code> has been unblocked.", parse_mode="HTML")
-
-
-@router.message(Command("addpts"))
-async def cmd_addpts(message: Message, session: AsyncSession):
-    if message.from_user.id != ADMIN_ID:
-        return
-    parts = message.text.split()
-    if len(parts) < 3:
-        await message.answer("Usage: <code>/addpts USER_ID AMOUNT</code>", parse_mode="HTML")
-        return
-    try:
-        uid, amount = int(parts[1]), int(parts[2])
-    except ValueError:
-        await message.answer("❌ Invalid parameters.", parse_mode="HTML")
-        return
-    user = await get_user(session, uid)
-    if not user:
-        await message.answer("❌ User not found.", parse_mode="HTML")
-        return
-    user.points += amount
-    await session.commit()
-    await message.answer(
-        f"✅ Added <b>{amount}</b> pts to <code>{uid}</code>\n"
-        f"💰 New balance: <b>{user.points}</b>",
-        parse_mode="HTML",
-    )
-
-
-@router.message(Command("rmpts"))
-async def cmd_rmpts(message: Message, session: AsyncSession):
-    if message.from_user.id != ADMIN_ID:
-        return
-    parts = message.text.split()
-    if len(parts) < 3:
-        await message.answer("Usage: <code>/rmpts USER_ID AMOUNT</code>", parse_mode="HTML")
-        return
-    try:
-        uid, amount = int(parts[1]), int(parts[2])
-    except ValueError:
-        await message.answer("❌ Invalid parameters.", parse_mode="HTML")
-        return
-    user = await get_user(session, uid)
-    if not user:
-        await message.answer("❌ User not found.", parse_mode="HTML")
-        return
-    user.points = max(0, user.points - amount)
-    await session.commit()
-    await message.answer(
-        f"✅ Removed <b>{amount}</b> pts from <code>{uid}</code>\n"
-        f"💰 New balance: <b>{user.points}</b>",
-        parse_mode="HTML",
-    )
 
 
 @router.message(Command("userinfo"))
@@ -569,30 +436,88 @@ async def cmd_userinfo(message: Message, session: AsyncSession):
     if message.from_user.id != ADMIN_ID:
         return
     parts = message.text.split()
-    if len(parts) < 2:
+    if len(parts) != 2 or not parts[1].lstrip("-").isdigit():
         await message.answer("Usage: <code>/userinfo USER_ID</code>", parse_mode="HTML")
         return
-    try:
-        uid = int(parts[1])
-    except ValueError:
-        await message.answer("❌ Invalid user ID.", parse_mode="HTML")
-        return
-    user = await get_user(session, uid)
+    user = await get_user(session, int(parts[1]))
     if not user:
         await message.answer("❌ User not found.", parse_mode="HTML")
         return
-    join_str = user.join_date.strftime("%d %b %Y %H:%M") if user.join_date else "N/A"
+    join_str = user.join_date.strftime("%d %b %Y") if user.join_date else "N/A"
     await message.answer(
         f"👤 <b>User Info</b>\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n\n"
         f"🆔 <b>ID:</b> <code>{user.telegram_id}</code>\n"
         f"👤 <b>Name:</b> {user.first_name or 'N/A'}\n"
         f"🔗 <b>Username:</b> @{user.username or 'N/A'}\n"
+        f"📅 <b>Joined:</b> {join_str}\n\n"
         f"💎 <b>Points:</b> {user.points}\n"
         f"👥 <b>Referrals:</b> {user.referrals}\n"
         f"✅ <b>Verified:</b> {'Yes' if user.verified else 'No'}\n"
-        f"🚫 <b>Blocked:</b> {'Yes' if user.blocked else 'No'}\n"
-        f"📅 <b>Joined:</b> {join_str}",
+        f"🚫 <b>Blocked:</b> {'Yes' if user.blocked else 'No'}",
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command("block"))
+async def cmd_block(message: Message, session: AsyncSession):
+    if message.from_user.id != ADMIN_ID:
+        return
+    parts = message.text.split()
+    if len(parts) != 2:
+        await message.answer("Usage: <code>/block USER_ID</code>", parse_mode="HTML")
+        return
+    await block_user(session, int(parts[1]))
+    await message.answer(f"🚫 User <code>{parts[1]}</code> blocked.", parse_mode="HTML")
+
+
+@router.message(Command("unblock"))
+async def cmd_unblock(message: Message, session: AsyncSession):
+    if message.from_user.id != ADMIN_ID:
+        return
+    parts = message.text.split()
+    if len(parts) != 2:
+        await message.answer("Usage: <code>/unblock USER_ID</code>", parse_mode="HTML")
+        return
+    await unblock_user(session, int(parts[1]))
+    await message.answer(f"✅ User <code>{parts[1]}</code> unblocked.", parse_mode="HTML")
+
+
+@router.message(Command("addpts"))
+async def cmd_add_pts(message: Message, session: AsyncSession):
+    if message.from_user.id != ADMIN_ID:
+        return
+    parts = message.text.split()
+    if len(parts) != 3 or not parts[2].isdigit():
+        await message.answer("Usage: <code>/addpts USER_ID N</code>", parse_mode="HTML")
+        return
+    user = await get_user(session, int(parts[1]))
+    if not user:
+        await message.answer("❌ User not found.", parse_mode="HTML")
+        return
+    user.points += int(parts[2])
+    await session.commit()
+    await message.answer(
+        f"✅ Added <b>{parts[2]}</b> pts to <code>{parts[1]}</code>. New balance: <b>{user.points}</b>",
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command("rmpts"))
+async def cmd_rm_pts(message: Message, session: AsyncSession):
+    if message.from_user.id != ADMIN_ID:
+        return
+    parts = message.text.split()
+    if len(parts) != 3 or not parts[2].isdigit():
+        await message.answer("Usage: <code>/rmpts USER_ID N</code>", parse_mode="HTML")
+        return
+    user = await get_user(session, int(parts[1]))
+    if not user:
+        await message.answer("❌ User not found.", parse_mode="HTML")
+        return
+    user.points = max(0, user.points - int(parts[2]))
+    await session.commit()
+    await message.answer(
+        f"✅ Removed <b>{parts[2]}</b> pts from <code>{parts[1]}</code>. New balance: <b>{user.points}</b>",
         parse_mode="HTML",
     )
 
@@ -600,14 +525,12 @@ async def cmd_userinfo(message: Message, session: AsyncSession):
 # ── Broadcast ──────────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "admin_broadcast")
-async def admin_broadcast_prompt(callback: CallbackQuery, state: FSMContext):
+async def admin_broadcast_menu(callback: CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("Access denied.", show_alert=True)
         return
     await callback.message.edit_text(
-        "📢 <b>Broadcast</b>\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Choose broadcast target:",
+        "📢 <b>Broadcast</b>\n\nChoose broadcast target:",
         parse_mode="HTML",
         reply_markup=admin_broadcast_type_kb(),
     )
@@ -615,21 +538,15 @@ async def admin_broadcast_prompt(callback: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(F.data == "admin_bc_channels")
-async def admin_bc_channels_prompt(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
+async def admin_bc_channels_prompt(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("Access denied.", show_alert=True)
         return
-    channels = await get_all_channels(session)
-    if not channels:
-        await callback.answer("⚠️ No channels added yet!", show_alert=True)
-        return
-    ch_list = "\n".join(f"• {ch.channel_title or '@' + ch.channel_username}" for ch in channels)
     await state.set_state(AdminStates.waiting_broadcast_channel_msg)
     await callback.message.edit_text(
-        f"📢 <b>Broadcast to Channels ({len(channels)})</b>\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"{ch_list}\n\n"
-        "Send the message to broadcast:",
+        "📢 <b>Broadcast to Channels</b>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Send the message to broadcast to all configured channels:",
         parse_mode="HTML",
         reply_markup=admin_back_kb(),
     )
@@ -637,30 +554,27 @@ async def admin_bc_channels_prompt(callback: CallbackQuery, state: FSMContext, s
 
 
 @router.message(AdminStates.waiting_broadcast_channel_msg)
-async def admin_broadcast_channel_send(message: Message, state: FSMContext, session: AsyncSession, bot: Bot):
+async def admin_broadcast_channels_send(message: Message, state: FSMContext, session: AsyncSession, bot: Bot):
     if message.from_user.id != ADMIN_ID:
         return
     await state.clear()
     channels = await get_all_channels(session)
     if not channels:
-        await message.answer("❌ No channels found.", parse_mode="HTML")
+        await message.answer("❌ No channels configured.", parse_mode="HTML", reply_markup=admin_back_kb())
         return
-    status_msg = await message.answer(f"⏳ Sending to {len(channels)} channel(s)...", parse_mode="HTML")
-    sent, failed = [], []
+    status_msg = await message.answer(f"⏳ Sending to {len(channels)} channel(s)...")
+    sent_names, failed = [], []
     for ch in channels:
-        cid = ch.channel_id
-        chat_ref = int(cid) if cid and cid.lstrip("-").isdigit() else f"@{(cid or ch.channel_username).lstrip('@')}"
         try:
-            await bot.copy_message(chat_ref, message.chat.id, message.message_id)
-            sent.append(ch.channel_title or ch.channel_username)
-        except Exception as e:
-            failed.append(f"{ch.channel_title or ch.channel_username} ({e.__class__.__name__})")
-    lines = ["📢 <b>Broadcast Complete!</b>\n"]
-    if sent:
-        lines.append(f"✅ <b>Sent ({len(sent)}):</b>")
-        lines += [f"  • {n}" for n in sent]
+            ref = ch.channel_id if ch.channel_id.startswith("-") else f"@{ch.channel_username.lstrip('@')}"
+            await bot.copy_message(ref, message.chat.id, message.message_id)
+            sent_names.append(ch.channel_title or ch.channel_username)
+        except Exception:
+            failed.append(ch.channel_title or ch.channel_username)
+    lines = [f"📢 <b>Broadcast Complete!</b>\n\n✅ Sent ({len(sent_names)}):"]
+    lines += [f"  • {n}" for n in sent_names]
     if failed:
-        lines.append(f"\n❌ <b>Failed ({len(failed)}):</b>")
+        lines.append(f"\n❌ Failed ({len(failed)}):")
         lines += [f"  • {n}" for n in failed]
     try:
         await status_msg.edit_text("\n".join(lines), parse_mode="HTML", reply_markup=admin_back_kb())
@@ -691,7 +605,7 @@ async def admin_broadcast_send(message: Message, state: FSMContext, session: Asy
     await state.clear()
     users = await get_all_users(session)
     verified = [u for u in users if u.verified and not u.blocked]
-    status_msg = await message.answer(f"⏳ Sending to {len(verified)} user(s)...", parse_mode="HTML")
+    status_msg = await message.answer(f"⏳ Sending to {len(verified)} user(s)...")
     sent = failed = 0
     for u in verified:
         try:

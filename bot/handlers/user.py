@@ -3,16 +3,19 @@ from aiogram.types import Message, CallbackQuery
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.services.db_service import (
-    get_user, get_all_apks, get_apk, redeem_apk,
-    get_user_redemptions, get_all_channels, get_reward_per_referral
+    get_user, redeem_code, get_user_redemptions,
+    get_all_channels, get_reward_per_referral, get_redeem_cost,
+    get_available_codes_count,
 )
 from bot.keyboards.user_kb import (
-    main_menu_kb, apk_list_kb, apk_confirm_kb, back_to_menu_kb, support_kb, join_channels_kb
+    main_menu_kb, code_confirm_kb, back_to_menu_kb, support_kb, join_channels_kb
 )
 from bot.utils.channel_checker import get_missing_channels
 from bot.config import BOT_USERNAME
 
 router = Router()
+
+PRODUCT_NAME = "Blinkit 100 off Chocolate"
 
 
 async def _check_access(message_or_callback, session: AsyncSession, bot: Bot) -> tuple[bool, object | None]:
@@ -54,7 +57,10 @@ async def show_profile(message: Message, session: AsyncSession, bot: Bot):
     if not ok:
         return
 
-    ref_link = f"https://t.me/{BOT_USERNAME}?start={user.telegram_id}" if BOT_USERNAME else "Set BOT_USERNAME env var"
+    ref_link = (
+        f"https://t.me/{BOT_USERNAME}?start={user.telegram_id}"
+        if BOT_USERNAME else "Set BOT_USERNAME env var"
+    )
     join_str = user.join_date.strftime("%d %b %Y") if user.join_date else "N/A"
 
     await message.answer(
@@ -81,8 +87,12 @@ async def refer_earn(message: Message, session: AsyncSession, bot: Bot):
     if not ok:
         return
 
-    ref_link = f"https://t.me/{BOT_USERNAME}?start={user.telegram_id}" if BOT_USERNAME else "Set BOT_USERNAME env var"
+    ref_link = (
+        f"https://t.me/{BOT_USERNAME}?start={user.telegram_id}"
+        if BOT_USERNAME else "Set BOT_USERNAME env var"
+    )
     reward = await get_reward_per_referral(session)
+    cost = await get_redeem_cost(session)
 
     await message.answer(
         f"🎯 <b>Refer & Earn</b>\n\n"
@@ -91,7 +101,8 @@ async def refer_earn(message: Message, session: AsyncSession, bot: Bot):
         f"📌 <b>How it works:</b>\n"
         f"  1️⃣ Share your unique referral link\n"
         f"  2️⃣ Friend joins & completes setup\n"
-        f"  3️⃣ You earn <b>{reward} point(s)</b> instantly\n\n"
+        f"  3️⃣ You earn <b>{reward} point(s)</b> instantly\n"
+        f"  4️⃣ Collect <b>{cost} points</b> → get 1 free Blinkit code!\n\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
         f"🔗 <b>Your Referral Link:</b>\n"
         f"<code>{ref_link}</code>\n\n"
@@ -101,109 +112,94 @@ async def refer_earn(message: Message, session: AsyncSession, bot: Bot):
     )
 
 
-# ── Get APK ────────────────────────────────────────────────────────────────────
+# ── Get Blinkit Code ───────────────────────────────────────────────────────────
 
-@router.message(F.text == "📱 Get APK")
-async def get_apk_menu(message: Message, session: AsyncSession, bot: Bot):
+@router.message(F.text == "🛍 Get Blinkit Code")
+async def get_code_menu(message: Message, session: AsyncSession, bot: Bot):
     ok, user = await _check_access(message, session, bot)
     if not ok:
         return
 
-    apks = await get_all_apks(session, active_only=True)
-    if not apks:
+    cost = await get_redeem_cost(session)
+    available = await get_available_codes_count(session)
+
+    if available == 0:
         await message.answer(
-            "📭 <b>No APKs Available</b>\n\n"
-            "━━━━━━━━━━━━━━━━━━━━\n\n"
-            "There are no APKs available at the moment.\n"
-            "Check back soon!",
+            f"😔 <b>No Codes Available</b>\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"All <b>{PRODUCT_NAME}</b> codes are currently out of stock.\n\n"
+            f"Please check back later or contact support.",
             parse_mode="HTML",
             reply_markup=back_to_menu_kb(),
         )
         return
 
+    if user.points < cost:
+        needed = cost - user.points
+        await message.answer(
+            f"💎 <b>{PRODUCT_NAME}</b>\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"🎟 <b>Cost:</b> {cost} Points\n"
+            f"💰 <b>Your Balance:</b> {user.points} Points\n"
+            f"❌ <b>Need:</b> {needed} more point(s)\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"📢 Refer <b>{needed}</b> more friend(s) to earn enough points!",
+            parse_mode="HTML",
+        )
+        return
+
     await message.answer(
-        f"📱 <b>Available APKs</b>\n\n"
+        f"🛍 <b>{PRODUCT_NAME}</b>\n\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"💰 <b>Your Balance:</b> {user.points} pts\n\n"
-        f"Select an APK to redeem:",
+        f"🎟 <b>Cost:</b> {cost} Points\n"
+        f"💰 <b>Your Balance:</b> {user.points} Points\n"
+        f"📦 <b>In Stock:</b> {available} code(s) available\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"After redeeming, you will receive <b>1 unique code</b> that can be used on the Blinkit app.\n\n"
+        f"⚠️ Each code is one-time use. Confirm only if you are ready.",
         parse_mode="HTML",
-        reply_markup=apk_list_kb(apks),
+        reply_markup=code_confirm_kb(),
     )
 
 
-@router.callback_query(F.data.startswith("apk_select_"))
-async def apk_selected(callback: CallbackQuery, session: AsyncSession, bot: Bot):
+@router.callback_query(F.data == "code_confirm")
+async def confirm_redeem(callback: CallbackQuery, session: AsyncSession, bot: Bot):
     ok, user = await _check_access(callback, session, bot)
     if not ok:
-        await callback.answer()
         return
 
-    apk_id = int(callback.data.split("_")[-1])
-    apk = await get_apk(session, apk_id)
-    if not apk or not apk.is_active:
-        await callback.answer("⚠️ This APK is no longer available.", show_alert=True)
-        return
-
-    can_afford = user.points >= apk.point_cost
-    status_line = (
-        f"✅ <b>You have enough points!</b>"
-        if can_afford
-        else f"❌ <b>Insufficient points</b> (need {apk.point_cost - user.points} more)"
-    )
-
-    await callback.message.edit_text(
-        f"📦 <b>Confirm Redemption</b>\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"🏷 <b>APK:</b> {apk.name}\n"
-        f"💎 <b>Cost:</b> {apk.point_cost} pts\n"
-        f"💰 <b>Your Balance:</b> {user.points} pts\n\n"
-        f"{status_line}\n\n"
-        f"{'Tap ✅ Confirm to redeem instantly.' if can_afford else 'Refer more friends to earn points.'}",
-        parse_mode="HTML",
-        reply_markup=apk_confirm_kb(apk_id) if can_afford else back_to_menu_kb(),
-    )
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("apk_confirm_"))
-async def apk_confirm(callback: CallbackQuery, session: AsyncSession, bot: Bot):
-    ok, user = await _check_access(callback, session, bot)
-    if not ok:
-        await callback.answer()
-        return
-
-    apk_id = int(callback.data.split("_")[-1])
-    success, result = await redeem_apk(session, callback.from_user.id, apk_id)
+    success, result = await redeem_code(session, user.telegram_id)
 
     if not success:
-        await callback.answer(f"❌ {result}", show_alert=True)
+        await callback.message.edit_text(
+            f"❌ <b>Redemption Failed</b>\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"{result}",
+            parse_mode="HTML",
+            reply_markup=back_to_menu_kb(),
+        )
+        await callback.answer("Redemption failed.", show_alert=True)
         return
 
-    apk_name, apk_password = result.split("|", 1)
-
     await callback.message.edit_text(
-        f"🎉 <b>Redemption Successful!</b>\n\n"
+        f"✅ <b>Code Redeemed Successfully!</b>\n\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"📦 <b>APK:</b> {apk_name}\n"
-        f"🔑 <b>Password:</b> <code>{apk_password}</code>\n\n"
+        f"🎟 <b>Your {PRODUCT_NAME} Code:</b>\n\n"
+        f"<code>{result}</code>\n\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"💰 <b>Remaining Balance:</b> {user.points - (await _get_apk_cost(session, apk_id))} pts\n\n"
-        f"<i>Screenshot this message — password will not be shown again.</i>",
+        f"📱 <b>How to use:</b>\n"
+        f"Open Blinkit app → Cart → Apply Coupon → Enter above code\n\n"
+        f"⚠️ This code is for one-time use only. Do not share it.",
         parse_mode="HTML",
         reply_markup=back_to_menu_kb(),
     )
-    await callback.answer("✅ APK redeemed successfully!")
+    await callback.answer("✅ Code sent!", show_alert=False)
 
 
-async def _get_apk_cost(session, apk_id: int) -> int:
-    apk = await get_apk(session, apk_id)
-    return apk.point_cost if apk else 0
-
-
-@router.callback_query(F.data == "apk_cancel")
-async def apk_cancel(callback: CallbackQuery):
+@router.callback_query(F.data == "code_cancel")
+async def cancel_redeem(callback: CallbackQuery):
     await callback.message.edit_text(
-        "❌ <b>Redemption Cancelled</b>\n\nNo points were deducted.",
+        "❌ <b>Redemption Cancelled.</b>\n\nNo points were deducted.",
         parse_mode="HTML",
         reply_markup=back_to_menu_kb(),
     )
@@ -221,10 +217,10 @@ async def show_history(message: Message, session: AsyncSession, bot: Bot):
     redemptions = await get_user_redemptions(session, user.telegram_id)
     if not redemptions:
         await message.answer(
-            "📭 <b>No Redemption History</b>\n\n"
-            "━━━━━━━━━━━━━━━━━━━━\n\n"
-            "You haven't redeemed any APKs yet.\n"
-            "Refer friends to earn points and get started!",
+            f"📭 <b>No Redemption History</b>\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"You haven't redeemed any {PRODUCT_NAME} codes yet.\n"
+            f"Refer friends to earn points and get started!",
             parse_mode="HTML",
         )
         return
@@ -232,8 +228,11 @@ async def show_history(message: Message, session: AsyncSession, bot: Bot):
     lines = [f"📜 <b>Redemption History</b>\n\n━━━━━━━━━━━━━━━━━━━━\n"]
     for i, r in enumerate(redemptions[:15], 1):
         date_str = r.date.strftime("%d %b %Y") if r.date else "N/A"
-        apk_name = r.apk.name if r.apk else "Deleted APK"
-        lines.append(f"{i}. 📦 <b>{apk_name}</b> — {r.points_spent} pts — {date_str}")
+        code_val = r.code.code if r.code else "N/A"
+        short_code = code_val[:20] + "…" if len(code_val) > 20 else code_val
+        lines.append(
+            f"{i}. 🎟 <code>{short_code}</code> — {r.points_spent} pts — {date_str}"
+        )
 
     if len(redemptions) > 15:
         lines.append(f"\n<i>Showing last 15 of {len(redemptions)} redemptions.</i>")
@@ -257,3 +256,15 @@ async def support(message: Message, session: AsyncSession, bot: Bot):
         parse_mode="HTML",
         reply_markup=support_kb(),
     )
+
+
+# ── Misc callbacks ─────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "main_menu")
+async def back_to_main(callback: CallbackQuery):
+    await callback.message.answer(
+        "🏠 <b>Main Menu</b>",
+        parse_mode="HTML",
+        reply_markup=main_menu_kb(),
+    )
+    await callback.answer()

@@ -3,13 +3,13 @@ from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from bot.models import Channel, Apk
+from bot.models import Channel
 
 
 def main_menu_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="🎯 Refer & Earn"), KeyboardButton(text="📱 Get APK")],
+            [KeyboardButton(text="🎯 Refer & Earn"), KeyboardButton(text="🛍 Get Blinkit Code")],
             [KeyboardButton(text="👤 My Profile"),   KeyboardButton(text="📜 History")],
             [KeyboardButton(text="💬 Support")],
         ],
@@ -44,21 +44,11 @@ def recheck_channels_kb(missing: list[Channel]) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def apk_list_kb(apks: list[Apk]) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    for apk in apks:
-        builder.row(InlineKeyboardButton(
-            text=f"📦 {apk.name}  ·  {apk.point_cost} pts",
-            callback_data=f"apk_select_{apk.id}",
-        ))
-    return builder.as_markup()
-
-
-def apk_confirm_kb(apk_id: int) -> InlineKeyboardMarkup:
+def code_confirm_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="✅ Confirm Redeem", callback_data=f"apk_confirm_{apk_id}"),
-            InlineKeyboardButton(text="❌ Cancel", callback_data="apk_cancel"),
+            InlineKeyboardButton(text="✅ Confirm & Get Code", callback_data="code_confirm"),
+            InlineKeyboardButton(text="❌ Cancel",              callback_data="code_cancel"),
         ]
     ])
 

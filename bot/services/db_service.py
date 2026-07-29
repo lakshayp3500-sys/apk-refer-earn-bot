@@ -1,6 +1,7 @@
-from sqlalchemy import select, func, update
+from datetime import datetime, timezone
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from bot.models import User, Channel, Referral, Apk, Redemption, Setting
+from bot.models import User, Channel, Referral, Code, Redemption, Setting
 from bot.config import REWARD_PER_REFERRAL_DEFAULT, WITHDRAW_POINTS_DEFAULT
 
 
@@ -28,6 +29,14 @@ async def get_reward_per_referral(session: AsyncSession) -> int:
         return int(val)
     except ValueError:
         return REWARD_PER_REFERRAL_DEFAULT
+
+
+async def get_redeem_cost(session: AsyncSession) -> int:
+    val = await get_setting(session, "redeem_cost", str(WITHDRAW_POINTS_DEFAULT))
+    try:
+        return int(val)
+    except ValueError:
+        return WITHDRAW_POINTS_DEFAULT
 
 
 # ── Users ──────────────────────────────────────────────────────────────────────
@@ -120,82 +129,108 @@ async def get_all_channels(session: AsyncSession) -> list[Channel]:
     return list(result.scalars().all())
 
 
-async def add_channel(session: AsyncSession, channel_id: str, username: str, title: str | None) -> Channel:
-    ch = Channel(channel_id=channel_id, channel_username=username, channel_title=title)
+async def add_channel(session: AsyncSession, channel_id: str, channel_username: str, channel_title: str | None) -> Channel:
+    ch = Channel(channel_id=channel_id, channel_username=channel_username, channel_title=channel_title)
     session.add(ch)
     await session.commit()
     return ch
 
 
-async def remove_channel(session: AsyncSession, channel_db_id: int) -> None:
+async def remove_channel(session: AsyncSession, channel_db_id: int) -> bool:
     result = await session.execute(select(Channel).where(Channel.id == channel_db_id))
     ch = result.scalar_one_or_none()
     if ch:
         await session.delete(ch)
         await session.commit()
+        return True
+    return False
 
 
-# ── APKs ───────────────────────────────────────────────────────────────────────
+# ── Codes ──────────────────────────────────────────────────────────────────────
 
-async def get_all_apks(session: AsyncSession, active_only: bool = False) -> list[Apk]:
-    q = select(Apk)
-    if active_only:
-        q = q.where(Apk.is_active == True)
-    result = await session.execute(q)
+async def get_all_codes(session: AsyncSession) -> list[Code]:
+    result = await session.execute(select(Code).order_by(Code.created_at.desc()))
     return list(result.scalars().all())
 
 
-async def get_apk(session: AsyncSession, apk_id: int) -> Apk | None:
-    result = await session.execute(select(Apk).where(Apk.id == apk_id))
-    return result.scalar_one_or_none()
+async def get_available_codes_count(session: AsyncSession) -> int:
+    result = await session.execute(
+        select(func.count(Code.id)).where(Code.is_used == False)
+    )
+    return result.scalar() or 0
 
 
-async def add_apk(session: AsyncSession, name: str, password: str, point_cost: int) -> Apk:
-    apk = Apk(name=name, password=password, point_cost=point_cost, is_active=True)
-    session.add(apk)
+async def add_codes(session: AsyncSession, code_strings: list[str]) -> tuple[int, int]:
+    """Add codes from a list. Returns (added, skipped_duplicates)."""
+    added = 0
+    skipped = 0
+    for raw in code_strings:
+        code_val = raw.strip()
+        if not code_val:
+            continue
+        existing = await session.execute(select(Code).where(Code.code == code_val))
+        if existing.scalar_one_or_none():
+            skipped += 1
+            continue
+        session.add(Code(code=code_val))
+        added += 1
     await session.commit()
-    return apk
+    return added, skipped
 
 
-async def remove_apk(session: AsyncSession, apk_id: int) -> None:
-    result = await session.execute(select(Apk).where(Apk.id == apk_id))
-    apk = result.scalar_one_or_none()
-    if apk:
-        await session.delete(apk)
+async def remove_code(session: AsyncSession, code_id: int) -> bool:
+    result = await session.execute(select(Code).where(Code.id == code_id))
+    code = result.scalar_one_or_none()
+    if code and not code.is_used:
+        await session.delete(code)
         await session.commit()
+        return True
+    return False
 
 
-async def set_all_apk_points(session: AsyncSession, points: int) -> int:
-    result = await session.execute(select(Apk))
-    apks = list(result.scalars().all())
-    for apk in apks:
-        apk.point_cost = points
+async def clear_unused_codes(session: AsyncSession) -> int:
+    result = await session.execute(select(Code).where(Code.is_used == False))
+    codes = list(result.scalars().all())
+    for c in codes:
+        await session.delete(c)
     await session.commit()
-    return len(apks)
+    return len(codes)
 
 
 # ── Redemptions ────────────────────────────────────────────────────────────────
 
-async def redeem_apk(session: AsyncSession, telegram_id: int, apk_id: int) -> tuple[bool, str]:
+async def redeem_code(session: AsyncSession, telegram_id: int) -> tuple[bool, str]:
+    """Deduct points and assign one unique unused code. Returns (success, code_or_error)."""
     user = await get_user(session, telegram_id)
     if not user:
         return False, "User not found."
 
-    apk = await get_apk(session, apk_id)
-    if not apk or not apk.is_active:
-        return False, "APK not available."
+    cost = await get_redeem_cost(session)
 
-    if user.points < apk.point_cost:
-        return False, f"Insufficient points. You need {apk.point_cost} pts, you have {user.points}."
+    if user.points < cost:
+        return False, f"Insufficient points. You need {cost} pts, you have {user.points}."
 
-    user.points -= apk.point_cost
+    # Pick first available code (FIFO)
+    result = await session.execute(
+        select(Code).where(Code.is_used == False).order_by(Code.created_at.asc()).limit(1)
+    )
+    code = result.scalar_one_or_none()
+    if not code:
+        return False, "No codes available right now. Please try again later or contact support."
+
+    # Deduct points and mark code used
+    user.points -= cost
+    code.is_used = True
+    code.used_by_telegram_id = telegram_id
+    code.used_at = datetime.now(timezone.utc)
+
     session.add(Redemption(
         user_telegram_id=telegram_id,
-        apk_id=apk_id,
-        points_spent=apk.point_cost,
+        code_id=code.id,
+        points_spent=cost,
     ))
     await session.commit()
-    return True, f"{apk.name}|{apk.password}"
+    return True, code.code
 
 
 async def get_user_redemptions(session: AsyncSession, telegram_id: int) -> list[Redemption]:
@@ -209,14 +244,20 @@ async def get_user_redemptions(session: AsyncSession, telegram_id: int) -> list[
 
 async def get_stats(session: AsyncSession) -> dict:
     total_users = (await session.execute(select(func.count(User.id)))).scalar() or 0
-    verified_users = (await session.execute(select(func.count(User.id)).where(User.verified == True))).scalar() or 0
+    verified_users = (await session.execute(
+        select(func.count(User.id)).where(User.verified == True)
+    )).scalar() or 0
     total_referrals = (await session.execute(select(func.count(Referral.id)))).scalar() or 0
     total_redemptions = (await session.execute(select(func.count(Redemption.id)))).scalar() or 0
-    active_apks = (await session.execute(select(func.count(Apk.id)).where(Apk.is_active == True))).scalar() or 0
+    available_codes = (await session.execute(
+        select(func.count(Code.id)).where(Code.is_used == False)
+    )).scalar() or 0
+    total_codes = (await session.execute(select(func.count(Code.id)))).scalar() or 0
     return {
         "total_users": total_users,
         "verified_users": verified_users,
         "total_referrals": total_referrals,
         "total_redemptions": total_redemptions,
-        "active_apks": active_apks,
+        "available_codes": available_codes,
+        "total_codes": total_codes,
     }

@@ -1,6 +1,6 @@
-# 📱 APK Refer & Earn Bot
+# 🛍 Blinkit 100 off Chocolate — Refer & Earn Bot
 
-A Telegram bot where users earn points by referring friends and redeem them for APKs — fully automatic delivery.
+A Telegram bot where users earn points by referring friends and redeem them for **Blinkit 100 off Chocolate** coupon codes — fully automatic delivery.
 
 ---
 
@@ -44,9 +44,10 @@ A Telegram bot where users earn points by referring friends and redeem them for 
 ## ⚙️ Bot Setup (Deploy ke Baad)
 
 1. `/admin` → Admin panel
-2. **📡 Channels** → **➕ Add Channel**
-3. **📱 APK Manager** → **➕ Add APK** (naam → password → points)
-4. `/setreward 1` → referral reward set karo
+2. **📡 Channels** → **➕ Add Channel** (force-join channels add karo)
+3. **🎟 Code Manager** → **➕ Add Codes** (ek line mein ek code paste karo)
+4. `/setreward 1` → referral pe kitne points milenge
+5. `/setcost 5` → redeem karne ke liye kitne points chahiye
 
 ---
 
@@ -56,6 +57,7 @@ A Telegram bot where users earn points by referring friends and redeem them for 
 |---|---|
 | `/admin` | Admin panel |
 | `/setreward N` | Referral reward set karna |
+| `/setcost N` | Redeem cost set karna |
 | `/block USER_ID` | User block karna |
 | `/unblock USER_ID` | User unblock karna |
 | `/addpts USER_ID N` | Points add karna |
@@ -68,7 +70,16 @@ A Telegram bot where users earn points by referring friends and redeem them for 
 
 - ✅ **Force Join** — channels join karne ke baad hi access
 - 🎯 **Referral System** — refer karo, points kamao
-- 📱 **APK Redemption** — automatic naam + password delivery
+- 🛍 **Blinkit Code Redemption** — automatic unique code delivery
+- 🔒 **One-time Codes** — ek code ek baar, stock se remove hota hai
 - 🛡 **Admin Panel** — full inline button control
 - 📢 **Broadcast** — users ya channels ko message
-- ⏰ **Keep-Alive** — har 10 min auto ping, free tier pe bhi 24/7 online
+
+---
+
+## 🎟 Code Manager (Admin Panel)
+
+- **➕ Add Codes** → ek line mein ek code paste karo (bulk support)
+- **📋 View Code Stats** → available / used / total count
+- **➖ Remove a Code** → kisi specific code ko hatao
+- **🗑 Clear All Unused** → saare unused codes ek saath hatao

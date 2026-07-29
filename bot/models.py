@@ -18,7 +18,9 @@ class User(Base):
     blocked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     referred_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
-    redemptions: Mapped[list["Redemption"]] = relationship("Redemption", back_populates="user", foreign_keys="Redemption.user_telegram_id")
+    redemptions: Mapped[list["Redemption"]] = relationship(
+        "Redemption", back_populates="user", foreign_keys="Redemption.user_telegram_id"
+    )
 
 
 class Channel(Base):
@@ -39,30 +41,37 @@ class Referral(Base):
     date: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-class Apk(Base):
-    __tablename__ = "apks"
+class Code(Base):
+    """Unique one-time-use Blinkit coupon codes."""
+    __tablename__ = "codes"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
-    password: Mapped[str] = mapped_column(String(512), nullable=False)
-    point_cost: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    code: Mapped[str] = mapped_column(String(512), unique=True, nullable=False)
+    is_used: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    used_by_telegram_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    redemptions: Mapped[list["Redemption"]] = relationship("Redemption", back_populates="apk")
+    redemption: Mapped["Redemption | None"] = relationship(
+        "Redemption", back_populates="code", uselist=False
+    )
 
 
 class Redemption(Base):
     __tablename__ = "redemptions"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_telegram_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.telegram_id"), nullable=False, index=True)
-    apk_id: Mapped[int] = mapped_column(Integer, ForeignKey("apks.id"), nullable=False)
+    user_telegram_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.telegram_id"), nullable=False, index=True
+    )
+    code_id: Mapped[int] = mapped_column(Integer, ForeignKey("codes.id"), nullable=False)
     points_spent: Mapped[int] = mapped_column(Integer, nullable=False)
     date: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    user: Mapped["User"] = relationship("User", back_populates="redemptions", foreign_keys=[user_telegram_id])
-    apk: Mapped["Apk"] = relationship("Apk", back_populates="redemptions")
+    user: Mapped["User"] = relationship(
+        "User", back_populates="redemptions", foreign_keys=[user_telegram_id]
+    )
+    code: Mapped["Code"] = relationship("Code", back_populates="redemption")
 
 
 class Setting(Base):
