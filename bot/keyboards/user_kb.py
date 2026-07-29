@@ -44,6 +44,13 @@ def recheck_channels_kb(missing: list[Channel]) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def verify_device_kb(verify_url: str) -> InlineKeyboardMarkup:
+    """Button that opens the device verification web page."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔐 Verify My Device", url=verify_url)],
+    ])
+
+
 def code_confirm_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [

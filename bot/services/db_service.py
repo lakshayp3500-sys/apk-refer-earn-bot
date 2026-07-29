@@ -1,7 +1,8 @@
-from datetime import datetime, timezone
+import secrets
+from datetime import datetime, timezone, timedelta
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from bot.models import User, Channel, Referral, Code, Redemption, Setting
+from bot.models import User, Channel, Referral, Code, Redemption, Setting, VerificationToken, DeviceRecord
 from bot.config import REWARD_PER_REFERRAL_DEFAULT, WITHDRAW_POINTS_DEFAULT
 
 
@@ -114,7 +115,6 @@ async def process_referral(session: AsyncSession, referrer_id: int, referred_id:
         return False
 
     reward = await get_reward_per_referral(session)
-
     session.add(Referral(referrer_id=referrer_id, referred_id=referred_id))
     referrer.points += reward
     referrer.referrals += 1
@@ -161,7 +161,6 @@ async def get_available_codes_count(session: AsyncSession) -> int:
 
 
 async def add_codes(session: AsyncSession, code_strings: list[str]) -> tuple[int, int]:
-    """Add codes from a list. Returns (added, skipped_duplicates)."""
     added = 0
     skipped = 0
     for raw in code_strings:
@@ -200,17 +199,14 @@ async def clear_unused_codes(session: AsyncSession) -> int:
 # ── Redemptions ────────────────────────────────────────────────────────────────
 
 async def redeem_code(session: AsyncSession, telegram_id: int) -> tuple[bool, str]:
-    """Deduct points and assign one unique unused code. Returns (success, code_or_error)."""
     user = await get_user(session, telegram_id)
     if not user:
         return False, "User not found."
 
     cost = await get_redeem_cost(session)
-
     if user.points < cost:
         return False, f"Insufficient points. You need {cost} pts, you have {user.points}."
 
-    # Pick first available code (FIFO)
     result = await session.execute(
         select(Code).where(Code.is_used == False).order_by(Code.created_at.asc()).limit(1)
     )
@@ -218,17 +214,11 @@ async def redeem_code(session: AsyncSession, telegram_id: int) -> tuple[bool, st
     if not code:
         return False, "No codes available right now. Please try again later or contact support."
 
-    # Deduct points and mark code used
     user.points -= cost
     code.is_used = True
     code.used_by_telegram_id = telegram_id
     code.used_at = datetime.now(timezone.utc)
-
-    session.add(Redemption(
-        user_telegram_id=telegram_id,
-        code_id=code.id,
-        points_spent=cost,
-    ))
+    session.add(Redemption(user_telegram_id=telegram_id, code_id=code.id, points_spent=cost))
     await session.commit()
     return True, code.code
 
@@ -260,4 +250,106 @@ async def get_stats(session: AsyncSession) -> dict:
         "total_redemptions": total_redemptions,
         "available_codes": available_codes,
         "total_codes": total_codes,
+    }
+
+
+# ── Device Verification ────────────────────────────────────────────────────────
+
+async def create_verification_token(
+    session: AsyncSession, telegram_id: int, referrer_id: int | None = None
+) -> str:
+    """Create a one-time verification token valid for 30 minutes."""
+    token = secrets.token_hex(24)  # 48-char hex string
+    expires = datetime.now(timezone.utc) + timedelta(minutes=30)
+    session.add(VerificationToken(
+        token=token,
+        telegram_id=telegram_id,
+        referrer_id=referrer_id,
+        expires_at=expires,
+    ))
+    await session.commit()
+    return token
+
+
+async def process_device_verification(
+    session: AsyncSession,
+    token: str,
+    ip_address: str,
+    fingerprint_hash: str,
+    user_agent: str,
+) -> dict:
+    """
+    Verify device from web callback.
+    Returns dict with keys: success, is_duplicate, telegram_id, referrer_id, referral_given, error
+    """
+    # Look up valid unused token
+    now = datetime.now(timezone.utc)
+    result = await session.execute(
+        select(VerificationToken).where(
+            VerificationToken.token == token,
+            VerificationToken.used == False,
+            VerificationToken.expires_at > now,
+        )
+    )
+    vtoken = result.scalar_one_or_none()
+    if not vtoken:
+        return {"success": False, "error": "Verification link is invalid or has expired. Send /start again."}
+
+    telegram_id = vtoken.telegram_id
+    referrer_id = vtoken.referrer_id
+
+    # ── Duplicate device checks ────────────────────────────────────────────────
+    # Check same IP used by a different Telegram account
+    ip_dup = (await session.execute(
+        select(DeviceRecord).where(
+            DeviceRecord.ip_address == ip_address,
+            DeviceRecord.telegram_id != telegram_id,
+        )
+    )).scalar_one_or_none()
+
+    # Check same fingerprint used by a different Telegram account
+    fp_dup = (await session.execute(
+        select(DeviceRecord).where(
+            DeviceRecord.fingerprint_hash == fingerprint_hash,
+            DeviceRecord.telegram_id != telegram_id,
+        )
+    )).scalar_one_or_none()
+
+    is_duplicate = (ip_dup is not None) or (fp_dup is not None)
+
+    # ── Store / update device record ───────────────────────────────────────────
+    existing_rec = (await session.execute(
+        select(DeviceRecord).where(DeviceRecord.telegram_id == telegram_id)
+    )).scalar_one_or_none()
+
+    if existing_rec:
+        existing_rec.ip_address = ip_address
+        existing_rec.fingerprint_hash = fingerprint_hash
+        existing_rec.user_agent = user_agent
+        existing_rec.verified_at = now
+    else:
+        session.add(DeviceRecord(
+            telegram_id=telegram_id,
+            ip_address=ip_address,
+            fingerprint_hash=fingerprint_hash,
+            user_agent=user_agent,
+        ))
+
+    # ── Mark token used & user verified ───────────────────────────────────────
+    vtoken.used = True
+    await mark_user_verified(session, telegram_id)
+
+    # ── Process referral only if device is NOT a duplicate ────────────────────
+    referral_given = False
+    if not is_duplicate and referrer_id:
+        referral_given = await process_referral(session, referrer_id, telegram_id)
+
+    await session.commit()
+
+    return {
+        "success": True,
+        "is_duplicate": is_duplicate,
+        "telegram_id": telegram_id,
+        "referrer_id": referrer_id,
+        "referral_given": referral_given,
     }
