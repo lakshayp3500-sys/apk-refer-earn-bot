@@ -11,7 +11,7 @@ from bot.keyboards.user_kb import (
     main_menu_kb, code_confirm_kb, back_to_menu_kb, support_kb, join_channels_kb
 )
 from bot.utils.channel_checker import get_missing_channels
-from bot.config import BOT_USERNAME
+from bot.config import BOT_USERNAME, ADMIN_ID
 
 router = Router()
 
@@ -25,6 +25,14 @@ async def _check_access(message_or_callback, session: AsyncSession, bot: Bot) ->
     else:
         uid = message_or_callback.from_user.id
         send = message_or_callback.message.answer
+
+    # Admin always gets through — no channel or verification gate
+    if uid == ADMIN_ID:
+        user = await get_user(session, uid)
+        if not user:
+            await send("Please send /start first to register.", parse_mode="HTML")
+            return False, None
+        return True, user
 
     user = await get_user(session, uid)
     if not user:

@@ -6,6 +6,7 @@ from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.default import DefaultBotProperties
+from aiogram.types import ErrorEvent
 
 from bot.config import BOT_TOKEN, ADMIN_ID, RENDER_URL
 from bot.database import engine, Base, AsyncSessionLocal
@@ -437,18 +438,19 @@ async def keep_alive():
 
 
 # ── Global Error Handler ──────────────────────────────────────────────────────
-async def global_error_handler(event, exception: Exception) -> bool:
+async def global_error_handler(event: ErrorEvent, bot: Bot) -> None:
+    """Catch all unhandled handler exceptions, log + notify admin."""
+    exception = event.exception
     logger.exception("Unhandled handler exception: %s", exception)
     try:
         short = str(exception)[:300]
-        await event.bot.send_message(
+        await bot.send_message(
             ADMIN_ID,
-            f"u26a0ufe0f <b>Bot Error</b>\n\n<code>{short}</code>",
+            f"⚠️ <b>Bot Error</b>\n\n<code>{short}</code>",
             parse_mode="HTML",
         )
     except Exception:
         pass
-    return True
 
 
 async def main():

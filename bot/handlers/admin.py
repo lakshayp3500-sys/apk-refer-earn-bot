@@ -36,18 +36,26 @@ class AdminStates(StatesGroup):
 async def cmd_admin(message: Message, session: AsyncSession):
     if message.from_user.id != ADMIN_ID:
         return
-    stats = await get_stats(session)
-    await message.answer(
-        f"🛡 <b>Admin Panel</b>\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"👥 <b>Total Users:</b> {stats['total_users']}\n"
-        f"✅ <b>Verified:</b> {stats['verified_users']}\n"
-        f"🎯 <b>Total Referrals:</b> {stats['total_referrals']}\n"
-        f"🎟 <b>Codes Redeemed:</b> {stats['total_redemptions']}\n"
-        f"📦 <b>Codes in Stock:</b> {stats['available_codes']}",
-        parse_mode="HTML",
-        reply_markup=admin_panel_kb(),
-    )
+    try:
+        stats = await get_stats(session)
+        await message.answer(
+            f"🛡 <b>Admin Panel</b>\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"👥 <b>Total Users:</b> {stats['total_users']}\n"
+            f"✅ <b>Verified:</b> {stats['verified_users']}\n"
+            f"🎯 <b>Total Referrals:</b> {stats['total_referrals']}\n"
+            f"🎟 <b>Codes Redeemed:</b> {stats['total_redemptions']}\n"
+            f"📦 <b>Codes in Stock:</b> {stats['available_codes']}",
+            parse_mode="HTML",
+            reply_markup=admin_panel_kb(),
+        )
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).exception("cmd_admin error: %s", exc)
+        await message.answer(
+            f"❌ <b>Admin panel error:</b>\n<code>{exc}</code>",
+            parse_mode="HTML",
+        )
 
 
 @router.callback_query(F.data == "admin_back")
