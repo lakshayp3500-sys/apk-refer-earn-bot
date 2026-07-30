@@ -13,8 +13,13 @@ DATABASE_URL: str = os.environ["DATABASE_URL"]
 def _make_async_url(url: str) -> str:
     import re
     url = url.replace("postgresql://", "postgresql+asyncpg://").replace("postgres://", "postgresql+asyncpg://")
-    # sslmode stripped by asyncpg via connect_args ssl="require" — do not strip from URL
-    url = re.sub(r"\?$", "", url)
+    # asyncpg does NOT understand libpq params like sslmode, connect_timeout, etc.
+    # Strip them — SSL is handled via connect_args in database.py
+    url = re.sub(r"[?&]sslmode=[^&]*", "", url)
+    url = re.sub(r"[?&]connect_timeout=[^&]*", "", url)
+    url = re.sub(r"[?&]application_name=[^&]*", "", url)
+    # Clean up dangling ? or &
+    url = re.sub(r"[?&]$", "", url)
     return url
 
 
